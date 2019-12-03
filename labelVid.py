@@ -105,7 +105,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.usingYoloFormat = True
 
         # For loading all image under a directory
-        self.mImgList = []
+        self.mFrameList = []
+        self.mVideoList = []
         self.dirname = None
         self.labelHist = []
         self.lastOpenDir = None
@@ -174,11 +175,17 @@ class MainWindow(QMainWindow, WindowMixin):
         self.dock.setObjectName(getStr('labels'))
         self.dock.setWidget(labelListContainer)
 
+        self.frameListWidget = QListWidget()
+        self.frameListWidget.itemDoubleClicked.connect(self.frameitemDoubleClicked)
+        self.frameListWidget.installEventFilter(self)
+
         self.fileListWidget = QListWidget()
         self.fileListWidget.itemDoubleClicked.connect(self.fileitemDoubleClicked)
         self.fileListWidget.installEventFilter(self)
+
         filelistLayout = QVBoxLayout()
         filelistLayout.setContentsMargins(0, 0, 0, 0)
+        filelistLayout.addWidget(self.frameListWidget)
         filelistLayout.addWidget(self.fileListWidget)
         fileListContainer = QWidget()
         fileListContainer.setLayout(filelistLayout)
@@ -292,8 +299,11 @@ class MainWindow(QMainWindow, WindowMixin):
         quit = action(getStr('quit'), self.close,
                       'Ctrl+Q', 'quit', getStr('quitApp'))
 
-        openVideo = action(getStr('openFile'), self.openFile,
-                      'Ctrl+O', 'open', getStr('openFileDetail'))
+        # openVideo = action(getStr('openFile'), self.openFile,
+        #               'Ctrl+O', 'open', getStr('openFileDetail'))
+
+        openVideo = action(getStr('openDir'), self.openDirVideoDialog,
+                         'Ctrl+u', 'open', getStr('openDir'))
 
         opendir = action(getStr('openDir'), self.openDirDialog,
                          'Ctrl+u', 'open', getStr('openDir'))
@@ -640,6 +650,50 @@ class MainWindow(QMainWindow, WindowMixin):
     }
         """
 
+    def openDirVideoDialog(self, _value=False, dirpath=None):
+        if not self.mayContinue():
+            return
+
+        defaultOpenDirPath = dirpath if dirpath else '.'
+        if self.lastOpenDir and os.path.exists(self.lastOpenDir):
+            defaultOpenDirPath = self.lastOpenDir
+        else:
+            defaultOpenDirPath = os.path.dirname(self.filePath) if self.filePath else '.'
+
+        targetDirPath = ustr(QFileDialog.getExistingDirectory(self,
+                                                     '%s - Open Directory' % __appname__, defaultOpenDirPath,
+                                                     QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks))
+        self.importDirVideos(targetDirPath)
+
+    def importDirVideos(self, dirpath):
+        if not self.mayContinue() or not dirpath:
+            return
+
+        self.lastOpenDir = dirpath
+        self.dirname = dirpath
+        self.filePath = None
+        self.fileListWidget.clear()
+        self.mVideoList = self.scanAllVideos(dirpath)
+        for imgPath in self.mVideoList:
+            item = QListWidgetItem(imgPath)
+            self.fileListWidget.addItem(item)
+
+    def scanAllVideos(self, folderPath):
+        extensions = ['.ts']
+        images = []
+
+        for root, dirs, files in os.walk(folderPath):
+            for file in files:
+                if file.lower().endswith(tuple(extensions)):
+                    relativePath = os.path.join(root, file)
+                    path = ustr(os.path.abspath(relativePath))
+                    images.append(path)
+        images.sort(key=lambda x: x.lower())
+        return images
+
+
+
+    # ---------------------------------------------
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key_Control:
             self.canvas.setDrawingShapeToSquare(False)
@@ -650,14 +704,14 @@ class MainWindow(QMainWindow, WindowMixin):
             self.canvas.setDrawingShapeToSquare(True)
 
     def eventFilter(self, source, event):
-        if (event.type() == QEvent.ContextMenu and source is self.fileListWidget):
+        if (event.type() == QEvent.ContextMenu and source is self.frameListWidget):
             # menu = QMenu()
             # menu.addAction('Make anno using selected')
             # if menu.exec_(event.globalPos()):
             #     item = source.itemAt(event.pos())
             #     self.loadFile(item.text())
             #     copyLabels = self.canvas.shapes.copy()
-            #     items = self.fileListWidget.selectedItems()
+            #     items = self.frameListWidget.selectedItems()
             #     for item in items:
             #         self.loadFile(item.text())
             #         self.canvas.loadShapes(copyLabels)
@@ -668,9 +722,9 @@ class MainWindow(QMainWindow, WindowMixin):
             return True
         if event.type() == QEvent.KeyPress and \
                 event.matches(QKeySequence.InsertParagraphSeparator):
-            item = self.fileListWidget.selectedItems()[0]
-            self.fileitemDoubleClicked(item)
-            self.fileListWidget.setFocus()
+            item = self.frameListWidget.selectedItems()[0]
+            self.frameitemDoubleClicked(item)
+            self.frameListWidget.setFocus()
         return super().eventFilter(source, event)
 
 
@@ -883,11 +937,18 @@ class MainWindow(QMainWindow, WindowMixin):
             self.setDirty()
 
     # Tzutalin 20160906 : Add file list and dock to move faster
-    def fileitemDoubleClicked(self, item=None):
+    def frameitemDoubleClicked(self, item=None):
         currIndex = int(item.text())
-        if currIndex < len(self.mImgList):
-            if currIndex in self.mImgList:
+        if currIndex < len(self.mFrameList):
+            if currIndex in self.mFrameList:
                 self.loadFrame(currIndex - 1)
+
+    def fileitemDoubleClicked(self, item=None):
+        currIndex = self.mVideoList.index(ustr(item.text()))
+        if currIndex < len(self.mVideoList):
+            filename = self.mVideoList[currIndex]
+            if filename:
+                self.loadFile(filename)
 
     # Add chris
     def btnstate(self, item= None):
@@ -1178,10 +1239,10 @@ class MainWindow(QMainWindow, WindowMixin):
 
         # Tzutalin 20160906 : Add file list and dock to move faster
         # Highlight the file item
-        if self.fileListWidget.count() > 0:
+        if self.frameListWidget.count() > 0:
 
             # self.setListWidgetPosition(position)
-            fileWidgetItem = self.fileListWidget.item(position)
+            fileWidgetItem = self.frameListWidget.item(position)
             fileWidgetItem.setSelected(True)
 
             # Load image:
@@ -1242,8 +1303,8 @@ class MainWindow(QMainWindow, WindowMixin):
         unicodeFilePath = ustr(filePath)
         # Tzutalin 20160906 : Add file list and dock to move faster
         # Highlight the file item
-        if unicodeFilePath and self.fileListWidget.count() > 0:
-            self.fileListWidget.clear()
+        if unicodeFilePath and self.frameListWidget.count() > 0:
+            self.frameListWidget.clear()
 
         if unicodeFilePath and os.path.exists(unicodeFilePath):
             if LabelFile.isLabelFile(unicodeFilePath):
@@ -1264,12 +1325,12 @@ class MainWindow(QMainWindow, WindowMixin):
                 # Load image:
                 # read data first and store for saving into label file.
                 self.video_cap = VideoCapture(unicodeFilePath)
-                self.mImgList = [i for i in range(1, self.video_cap.length() + 1)]
+                self.mFrameList = [i for i in range(1, self.video_cap.length() + 1)]
                 self.durationChanged(self.video_cap.duration)
                 self.positionSlider.setRange(0, self.video_cap.length() - 1)
-                for imgPath in self.mImgList:
+                for imgPath in self.mFrameList:
                     item = QListWidgetItem(str(imgPath))
-                    self.fileListWidget.addItem(item)
+                    self.frameListWidget.addItem(item)
                 self.labelFile = None
                 self.canvas.verified = False
 
@@ -1438,9 +1499,9 @@ class MainWindow(QMainWindow, WindowMixin):
         self.importDirImages(targetDirPath)
 
     def setListWidgetPosition(self, pos):
-        item = self.fileListWidget.item(pos)
+        item = self.frameListWidget.item(pos)
         item.setSelected(True)
-        self.fileListWidget.scrollToItem(self.fileListWidget.item(pos), hint=QAbstractItemView.EnsureVisible)
+        self.frameListWidget.scrollToItem(self.frameListWidget.item(pos), hint=QAbstractItemView.EnsureVisible)
 
     def importDirImages(self, dirpath):
         if not self.mayContinue() or not dirpath:
@@ -1449,12 +1510,12 @@ class MainWindow(QMainWindow, WindowMixin):
         self.lastOpenDir = dirpath
         self.dirname = dirpath
         self.filePath = None
-        self.fileListWidget.clear()
-        self.mImgList = self.video_cap.length()
+        self.frameListWidget.clear()
+        self.mFrameList = self.video_cap.length()
         self.openNextImg()
-        for imgPath in self.mImgList:
+        for imgPath in self.mFrameList:
             item = QListWidgetItem(imgPath)
-            self.fileListWidget.addItem(item)
+            self.frameListWidget.addItem(item)
 
     def verifyImg(self, _value=False):
         # Proceding next image without dialog if having any label
@@ -1483,13 +1544,13 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.mayContinue():
             return
 
-        if len(self.mImgList) <= 0:
+        if len(self.mFrameList) <= 0:
             return
 
         currIndex = self.video_cap.get_position()
-        if 0 <= currIndex - 1 < len(self.mImgList):
+        if 0 <= currIndex - 1 < len(self.mFrameList):
             currIndex = currIndex - 1
-            self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
+            self.frameListWidget.scrollToItem(self.frameListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
             self.loadFrame(currIndex)
 
     def openNextImg(self, _value=False):
@@ -1501,13 +1562,13 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.mayContinue():
             return
 
-        if len(self.mImgList) <= 0:
+        if len(self.mFrameList) <= 0:
             return
 
         currIndex = self.video_cap.get_position()
-        if currIndex + 1 < len(self.mImgList):
+        if currIndex + 1 < len(self.mFrameList):
             currIndex = currIndex + 1
-            self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
+            self.frameListWidget.scrollToItem(self.frameListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
 
         if currIndex:
             self.loadFrame(currIndex)
@@ -1520,15 +1581,15 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.mayContinue():
             return
 
-        if len(self.mImgList) <= 0:
+        if len(self.mFrameList) <= 0:
             return
 
         currIndex = self.video_cap.get_position()
-        if currIndex + n < len(self.mImgList):
+        if currIndex + n < len(self.mFrameList):
             currIndex = currIndex + n
         else:
-            currIndex = len(self.mImgList) - 1
-        self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
+            currIndex = len(self.mFrameList) - 1
+        self.frameListWidget.scrollToItem(self.frameListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
 
         if currIndex:
             self.loadFrame(currIndex)
@@ -1541,13 +1602,13 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.mayContinue():
             return
 
-        if len(self.mImgList) <= 0:
+        if len(self.mFrameList) <= 0:
             return
 
         currIndex = self.video_cap.get_position()
-        if currIndex - n < len(self.mImgList):
+        if currIndex - n < len(self.mFrameList):
             currIndex = currIndex - n if currIndex - n >= 0 else 0
-            self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
+            self.frameListWidget.scrollToItem(self.frameListWidget.item(currIndex), hint=QAbstractItemView.EnsureVisible)
         self.loadFrame(currIndex)
 
     def openFile(self, _value=False):
