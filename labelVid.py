@@ -10,6 +10,7 @@ import subprocess
 # import cv2
 from functools import partial
 from collections import defaultdict
+import pathlib
 
 try:
     from PyQt5.QtGui import *
@@ -53,6 +54,7 @@ from libs.video_processing import VideoCapture
 
 
 __appname__ = 'labelVid'
+POS = 20
 
 # Utility functions and classes.
 
@@ -180,6 +182,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.frameListWidget.installEventFilter(self)
 
         self.fileListWidget = QListWidget()
+        self.fileListWidget.setObjectName('Test')
         self.fileListWidget.itemDoubleClicked.connect(self.fileitemDoubleClicked)
         self.fileListWidget.installEventFilter(self)
 
@@ -273,8 +276,25 @@ class MainWindow(QMainWindow, WindowMixin):
         self.annoEndButton.setStyleSheet("Text-align:center")
         self.annoEndButton.pressed.connect(self.setStopPropagateFrame)
 
+        self.ChangeAllMarksButton = QPushButton()
+        self.ChangeAllMarksButton.setDisabled(False)
+        self.ChangeAllMarksButton.setText('Все события как это')
+        self.ChangeAllMarksButton.setStyleSheet("Text-align:center")
+        self.ChangeAllMarksButton.pressed.connect(self.changeObjClass)
+
+        self.shortcut = QShortcut(QKeySequence("Q"), self)
+        self.shortcut.activated.connect(self.clearAllMarks)
+
+        self.ClearMarksButton = QPushButton()
+        self.ClearMarksButton.setDisabled(False)
+        self.ClearMarksButton.setText('Удалить все события')
+        self.ClearMarksButton.setStyleSheet("Text-align:center")
+        self.ClearMarksButton.pressed.connect(self.clearAllMarks)
+
         annoToolLayout.addWidget(self.annoStartButton)
         annoToolLayout.addWidget(self.annoEndButton)
+        annoToolLayout.addWidget(self.ChangeAllMarksButton)
+        annoToolLayout.addWidget(self.ClearMarksButton)
         AnnoContainer.setLayout(annoToolLayout)
 
         # Сompilation
@@ -516,11 +536,11 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.tools = self.toolbar('Tools')
         self.actions.beginner = (
-            openVideo, openAnnotation, saveAnno, openNextImg, openPrevImg, verify, save, None, create, copy, paste, delete, None,
+            openVideo, verify,  openNextImg, openPrevImg, create, copy, paste, delete, None,
             zoomIn, zoom, zoomOut, fitWindow, fitWidth)
 
         self.actions.advanced = (
-            openVideo, openAnnotation, saveAnno, openNextImg, openPrevImg, save, save_format, None, editor,
+            openVideo, verify, openAnnotation, saveAnno, openNextImg, openPrevImg, save, save_format, None, editor,
             createMode, editMode, None,
             hideAll, showAll)
 
@@ -679,7 +699,7 @@ class MainWindow(QMainWindow, WindowMixin):
             self.fileListWidget.addItem(item)
 
     def scanAllVideos(self, folderPath):
-        extensions = ['.ts']
+        extensions = ['.mkv']
         images = []
 
         for root, dirs, files in os.walk(folderPath):
@@ -690,8 +710,6 @@ class MainWindow(QMainWindow, WindowMixin):
                     images.append(path)
         images.sort(key=lambda x: x.lower())
         return images
-
-
 
     # ---------------------------------------------
     def keyReleaseEvent(self, event):
@@ -786,6 +804,20 @@ class MainWindow(QMainWindow, WindowMixin):
             self.annoStartButton.setText('Start propagate')
             self.annoEndButton.setDisabled(True)
             # self.setClean()
+
+    def clearAllMarks(self):
+        self.shapes = YoloCacheReader(classListPath=config.PREDEF_YOLO_CLASSES)
+        self.loadFile(self.filePath)
+
+    def changeObjClass(self):
+        shapes = self.shapes.getShapes()
+        position = self.video_cap.get_position()
+        self.saveFile()
+        propagate_shapes = self.canvas.shapes.copy()
+        for frame in shapes:
+            self.shapes[frame] = [self.format_shape(shape) for shape in propagate_shapes]
+        self.saveLabels()
+
 
     def populateModeActions(self):
         if self.beginner():
@@ -945,10 +977,15 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def fileitemDoubleClicked(self, item=None):
         currIndex = self.mVideoList.index(ustr(item.text()))
+        fileWidgetItem = self.fileListWidget.item(currIndex)
+        fileWidgetItem.setBackground(Qt.white)
         if currIndex < len(self.mVideoList):
             filename = self.mVideoList[currIndex]
             if filename:
+                self.filePath = filename
+                self.loadVideoCacheByFilename(filename.replace('mkv', 'log'))
                 self.loadFile(filename)
+                self.filedock.setWindowTitle(f'File list {currIndex + 1}/{len(self.mVideoList)}')
 
     # Add chris
     def btnstate(self, item= None):
@@ -1242,8 +1279,8 @@ class MainWindow(QMainWindow, WindowMixin):
         if self.frameListWidget.count() > 0:
 
             # self.setListWidgetPosition(position)
-            fileWidgetItem = self.frameListWidget.item(position)
-            fileWidgetItem.setSelected(True)
+            frameWidgetItem = self.frameListWidget.item(position)
+            frameWidgetItem.setSelected(True)
 
             # Load image:
             # read data first and store for saving into label file.
@@ -1287,11 +1324,12 @@ class MainWindow(QMainWindow, WindowMixin):
     def loadFile(self, filePath=None):
         """Load the specified file, or the last opened file if None."""
 
-        if self.shapes is not None:
-            if not self.discardChangesDialog():
-                return False
+        # if self.shapes is not None:
+        #     if not self.discardChangesDialog():
+        #         return False
 
-        self.shapes = YoloCacheReader(classListPath=config.PREDEF_YOLO_CLASSES)
+        if self.shapes is None:
+            self.shapes = YoloCacheReader(classListPath=config.PREDEF_YOLO_CLASSES)
         self.resetState()
         self.canvas.setEnabled(False)
         if filePath is None:
@@ -1336,10 +1374,12 @@ class MainWindow(QMainWindow, WindowMixin):
 
             self.status("Loaded %s" % os.path.basename(unicodeFilePath))
             self.filePath = unicodeFilePath
-            self.loadFrame(position=0)
+
 
             if self.labelFile:
                 self.loadLabels(self.labelFile.shapes)
+
+            self.loadFrame(position=POS)
             self.setClean()
             self.canvas.setEnabled(True)
             self.adjustScale(initial=True)
@@ -1518,22 +1558,28 @@ class MainWindow(QMainWindow, WindowMixin):
             self.frameListWidget.addItem(item)
 
     def verifyImg(self, _value=False):
-        # Proceding next image without dialog if having any label
-        if self.filePath is not None:
-            try:
-                self.labelFile.toggleVerify()
-            except AttributeError:
-                # If the labelling file does not exist yet, create if and
-                # re-save it with the verified attribute.
-                self.saveFile()
-                if self.labelFile != None:
-                    self.labelFile.toggleVerify()
-                else:
-                    return
+        currIndex = self.mVideoList.index(self.filePath)
+        fileWidgetItem = self.fileListWidget.item(currIndex)
+        fileWidgetItem.setSelected(True)
+        fileWidgetItem.setBackground(Qt.green)
+        self.saveAnnotation()
 
-            self.canvas.verified = self.labelFile.verified
-            self.paintCanvas()
-            self.saveFile()
+        # Proceding next image without dialog if having any label
+        # if self.filePath is not None:
+        #     try:
+        #         self.labelFile.toggleVerify()
+        #     except AttributeError:
+        #         # If the labelling file does not exist yet, create if and
+        #         # re-save it with the verified attribute.
+        #         self.saveFile()
+        #         if self.labelFile != None:
+        #             self.labelFile.toggleVerify()
+        #         else:
+        #             return
+        #
+        #     self.canvas.verified = self.labelFile.verified
+        #     self.paintCanvas()
+        #     self.saveFile()
 
     def openPrevImg(self, _value=False):
         # Proceding prev image without dialog if having any label
@@ -1642,6 +1688,7 @@ class MainWindow(QMainWindow, WindowMixin):
         #                    else self.saveFileDialog(removeExt=False))
 
     def saveAnnotation(self):
+        self.saveFile()
         if self.annoFilePath and self.filePath:
             if self.shapes:
                 self.shapes.save(filepath=self.annoFilePath)
@@ -1808,6 +1855,11 @@ class MainWindow(QMainWindow, WindowMixin):
         if os.path.isfile(path) is False:
             return
 
+        p = pathlib.Path(path)
+        if p.with_suffix('.anno').exists():
+            path = str(p.with_suffix('.anno'))
+
+        self.annoFilePath = str(pathlib.Path(path).with_suffix('.anno'))
         self.set_format(FORMAT_YOLO)
         tYoloParseReader = YoloCacheReader(path, classListPath=defaultPrefdefClassFile())
         self.shapes = tYoloParseReader

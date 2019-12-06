@@ -97,9 +97,13 @@ class YoloCacheReader:
         self.saveYoloFormat(filepath)
 
     def __getitem__(self, item):
-        detections = self.detections.get(item)
+        detections = self.detections.get(item, [])
         # FIXME фигня с координатами, перепутаны
-        shapes = [self.addShape(self.classes[int(det.obj_class)], det.x1, det.y1, det.x2, det.y2, 0.5) for det in detections] if detections else []
+        #shapes = [self.addShape(self.classes[int(det.obj_class)], det.x1, det.y1, det.x2, det.y2, 0.5) for det in detections] if detections else []
+        shapes = []
+        for det in detections:
+            s = self.addShape(self.classes[int(det.obj_class)], det.x1, det.y1, det.x2, det.y2, 0.5)
+            shapes.append(s)
         return shapes
 
     def __setitem__(self, pos, value):
