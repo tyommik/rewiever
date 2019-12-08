@@ -513,6 +513,8 @@ class MainWindow(QMainWindow, WindowMixin):
         self.shortcut.activated.connect(lambda : self.jumpForward(5 * config.NUM_SKIP_FRAMES))
         self.shortcut = QShortcut(QKeySequence("Shift+A"), self)
         self.shortcut.activated.connect(lambda :self.jumpBackward(5 * config.NUM_SKIP_FRAMES))
+        self.shortcut = QShortcut(QKeySequence("S"), self)
+        self.shortcut.activated.connect(self.openNextfile)
 
         addActions(self.menus.file,
                    (openVideo, openAnnotation, saveAnno, saveAnnoAs, self.menus.recentFiles, save, close, resetAll, quit))
@@ -699,7 +701,7 @@ class MainWindow(QMainWindow, WindowMixin):
             self.fileListWidget.addItem(item)
 
     def scanAllVideos(self, folderPath):
-        extensions = ['.mkv']
+        extensions = ['.mp4']
         images = []
 
         for root, dirs, files in os.walk(folderPath):
@@ -975,6 +977,20 @@ class MainWindow(QMainWindow, WindowMixin):
             if currIndex in self.mFrameList:
                 self.loadFrame(currIndex - 1)
 
+    def openNextfile(self, item=None):
+        currIndex = self.mVideoList.index(self.filePath)
+        fileWidgetItem = self.fileListWidget.item(currIndex)
+        if currIndex + 1 < len(self.mVideoList):
+            filename = self.mVideoList[currIndex + 1]
+            if filename:
+                self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex + 1),
+                                                  hint=QAbstractItemView.EnsureVisible)
+                self.filePath = filename
+                self.loadVideoCacheByFilename(filename.replace('mp4', 'log'))
+                self.loadFile(filename)
+                self.filedock.setWindowTitle(f'File list {currIndex + 1}/{len(self.mVideoList)}')
+
+
     def fileitemDoubleClicked(self, item=None):
         currIndex = self.mVideoList.index(ustr(item.text()))
         fileWidgetItem = self.fileListWidget.item(currIndex)
@@ -983,7 +999,7 @@ class MainWindow(QMainWindow, WindowMixin):
             filename = self.mVideoList[currIndex]
             if filename:
                 self.filePath = filename
-                self.loadVideoCacheByFilename(filename.replace('mkv', 'log'))
+                self.loadVideoCacheByFilename(filename.replace('mp4', 'log'))
                 self.loadFile(filename)
                 self.filedock.setWindowTitle(f'File list {currIndex + 1}/{len(self.mVideoList)}')
 
@@ -1362,6 +1378,11 @@ class MainWindow(QMainWindow, WindowMixin):
             else:
                 # Load image:
                 # read data first and store for saving into label file.
+                currIndex = self.mVideoList.index(self.filePath)
+                fileWidgetItem = self.fileListWidget.item(currIndex)
+
+                fileWidgetItem.setSelected(True)
+
                 self.video_cap = VideoCapture(unicodeFilePath)
                 self.mFrameList = [i for i in range(1, self.video_cap.length() + 1)]
                 self.durationChanged(self.video_cap.duration)
