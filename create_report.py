@@ -1,35 +1,15 @@
-import csv
-import re
-import requests
-import datetime
-import os
-import cv2
-import json
-import tqdm
-from multiprocessing import Pool
-from multiprocessing.dummy import Pool as ThreadPool, JoinableQueue
-from itertools import product
+import  os
 import pathlib
-import subprocess
+from collections import namedtuple
 import csv
+import datetime
+
+INPUT = r'/home/ashibaev/Documents/Доразметка/Майкоп/Кубань+24+Майкопское+ТВ'
 
 
-from PIL import Image, ImageFile
-ImageFile.LOAD_TRUNCATED_IMAGES = True
+INPUT = pathlib.Path(INPUT)
 
-# SETTINGS
-CSV_FILE = r'/home/ashibaev/Documents/ЗИП_АХТУНГ/Казань/Эфир/source.csv'
-
-
-def read_csv(csvfile):
-    with open(csvfile, newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile, delimiter=';')
-        for row in reader:
-            yield row
-
-TEMP = pathlib.Path(CSV_FILE).parent
-FPS = 25
-read_csv_gen = read_csv(CSV_FILE)
+Detection = namedtuple('Detection', 'pos, x1, y1, x2, y2, obj_class, precision')
 
 cities = {
     "Воронеж": 3,
@@ -251,148 +231,162 @@ cities = {
     "SL-EKB": 5,
 }
 
-def create_anno(anno_path, params: dict):
-    x1, y1, x2, y2 = params["left"], params["top"], params["left"] + params["width"], params["top"] + params["height"]
-    obj_class = params["obj_class"]
-    duration = params["duration"]
-    gap = params["gap"]
-    lines = []
-    # for frame in range(gap, gap + int(duration * FPS)):
-    for frame in range(0, gap + int(duration * FPS) + 2300):
-        # pos, x1, y1, x2, y2, obj_class, precision = line.split(' ')
-        lines.append(f'{frame} {x1} {y1} {x2} {y2} {obj_class} 0\n')
-    with pathlib.Path.open(anno_path, 'w') as inf:
-        inf.write("# start\n")
-        for line in lines:
-            inf.write(line)
-        inf.write("# end\n")
-    return True
+#define ZIP_0 L"443746D1-23F3-4367-A99D-021171D8E006"
+#define ZIP_6 L"780EF08B-FF15-483E-A4C4-0052585C7160"
+#define ZIP_12 L"A5124A84-5049-480E-98C6-011679F448AC"
+#define ZIP_16 L"C01258F9-54B2-4271-8D24-0578DAC65716"
+#define ZIP_18 L"ACB5ACFE-4F6C-4AD7-8436-00746C5DCF91"
 
+mapping = {0: '0+', 1: '6+', 2: '12+', 3: '16+', 4: '18+', 5: 'none'}
 
-def convert_to_mkv(video_file):
-    file = pathlib.Path(video_file)
-    # ffmpeg -i <INPUT> -vcodec copy -ss 00:00:00 -force_key_frames 00:00:00 -map 0:0 -sn -map_metadata 0 <OUTPUT>
-    args = f'ffmpeg -i {str(file)} -vcodec copy -ss 00:00:00 -force_key_frames 00:00:00 -map 0:0 -sn -map_metadata 0 {str(file.with_suffix(".mkv"))} -y'
-    p = subprocess.run(args.split(' '))
-    if p.returncode == 0:
+ZIP_PATTERN = {
+    "0+": "443746D1-23F3-4367-A99D-021171D8E006",
+    "6+": "780EF08B-FF15-483E-A4C4-0052585C7160",
+    "12+": "A5124A84-5049-480E-98C6-011679F448AC",
+    "16+": "C01258F9-54B2-4271-8D24-0578DAC65716",
+    "18+": "ACB5ACFE-4F6C-4AD7-8436-00746C5DCF91"
+}
+
+csv_fieldnames = ['service_id', 'ResultSearchPatternID', 'time_start', 'time_stop', 'action', 'NewSearchPatternID', \
+                  'BorderLeft', 'BorderTop', 'BorderWidth',	'BorderHeight', 'pattern_str', 'comment', 'local_time']
+
+def getAllEvents(path):
+    events = []
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            file = pathlib.Path(os.path.join(path, file))
+            if file.suffix == '.anno':
+                anno = None
+                video = None
+                if file.with_suffix('.mkv').exists():
+                    video = file.with_suffix('.mkv')
+                if file.with_suffix('.anno').exists():
+                    anno = file.with_suffix('.anno')
+                events.append((video, anno))
+    return events
+
+def process_event(event):
+    def check_log_anno(log, anno):
+
+        assert anno is not None
+        with pathlib.Path.open(log, 'r') as log_f, pathlib.Path.open(anno, 'r') as anno_f:
+            log_lines = [line.strip() for line in log_f.readlines()]
+            anno_lines = [line.strip() for line in anno_f.readlines()]
+
+            if log_lines == anno_lines:
+                return True
+            return False
+
+    def annoIsEmpty(anno):
+        anno_lines = []
+        with pathlib.Path.open(anno, 'r') as anno_f:
+            for line in anno_f.readlines():
+                if line.startswith("#"):
+                    continue
+                anno_lines.append(line)
+        if anno_lines:
+            return False
         return True
-    return False
 
-def convert_to_mkv_mkvtoolnix(video_file):
-    file = pathlib.Path(video_file)
-    # /usr/bin/mkvmerge --output test.mkv --no-audio --language 0:und '(' test.ts ')'
-    args = f"mkvmerge --output {str(file.with_suffix('.mkv'))} --no-audio --language 0:und " + f"{str(file)}"
-    p = subprocess.run(args.split(' '))
-    if p.returncode == 0:
-        return True
-    return False
+    def getNewLabel(anno):
+        labels = set()
+        with pathlib.Path.open(anno, 'r') as anno_f:
+            for line in anno_f.readlines():
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                pos, x1, y1, x2, y2, obj_class, precision = line.split(' ')
+                obj_class = int(obj_class)
+                labels.add(obj_class)
 
-def download_file(args):
-    url, file = args
-    try:
-        r = requests.get(url, allow_redirects=True, timeout=35)
-        r.raise_for_status()
-    except Exception as err:
-        print(f'{type(err).__name__} {str(err)}')
+        if len(labels) > 1:
+            raise ValueError (anno)
+        l = [label for label in labels][0]
+        t = mapping[l]
+        return t
+
+    def getNewRect(anno):
+        labels = set()
+        with pathlib.Path.open(anno, 'r') as anno_f:
+            for line in anno_f.readlines():
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                pos, x1, y1, x2, y2, obj_class, precision = map(int, line.split(' '))
+                labels.add((x1, y1, x2, y2))
+
+        if len(labels) > 1:
+            raise ValueError (anno)
+        l = [label for label in labels][0]
+        x, y, w, h = l[0], l[1], l[2] - l[0], l[3] - l[1]
+        return x, y, w, h
+
+    video, anno = event
+
+    # parse name of file
+    name_args = log.stem.split('_')
+    CityName, start_date, lstart_time, end_date, lend_time, pattern_id = name_args
+
+    # local_time = datetime.datetime.strptime(date + ' ' + ltime, '%d.%m.%Y %H:%M:%S.%f') - datetime.timedelta(hours=cities[CityName])
+    start_UTC = datetime.datetime.strptime(start_date + ' ' + lstart_time, '%d.%m.%Y %H:%M:%S.%f') - datetime.timedelta(
+        hours=cities[CityName.replace('+', ' ')])
+    end_UTC = datetime.datetime.strptime(end_date + ' ' + lend_time, '%d.%m.%Y %H:%M:%S.%f') - datetime.timedelta(
+        hours=cities[CityName.replace('+', ' ')])
+
+    default = {i: "" for i in csv_fieldnames}
+    default['local_time'] = datetime.datetime.strptime(start_date + ' ' + lstart_time, '%d.%m.%Y %H:%M:%S.%f')
+
+    #pattern_id =log.stem.rsplit('_')[-1]
+    default['ResultSearchPatternID'] = pattern_id
+    pattern_str = getNewLabel(log)
+    default["pattern_str"] = pattern_str
+
+    default["time_start"] = start_UTC
+    default["time_stop"] = end_UTC
+
+    if video is None:
+        default['comment'] = "CHECK_BY_HANDS"
+        default['action'] = "VALID"
     else:
-        with pathlib.Path.open(file, 'wb') as ouf:
-            ouf.write(r.content)
-            convert_to_mkv_mkvtoolnix(file)
-        return True
-    return False
+        if anno is None:
+            default['comment'] = "CHECK_BY_HANDS"
+            #default['action'] = "VALID"
+            # лучше удалить
+            default['action'] = "DELETE"
+        else:
 
-
-mapping = {0: '0+', 1: '12+', 2: '16+', 3: '18+', 4: '6+', 5: 'none'}
-reverse_mapping = {'0+': 0, '6+': 1, '12+': 2, '16+': 3, '18+': 4 }
-
-START_ROW = 0
-GAP = 5 * 25 # seconds * fps
+            # если аннотация пустая, т.е. ЛОЖНЯК
+            if annoIsEmpty(anno):
+                default["action"] = "DELETE"
+            else:
+                res = check_log_anno(log, anno)
+                if res:
+                    # если лог и аннотиция совпали, то VALID
+                    default["action"] = "VALID"
+                else:
+                    # если не совпали - UPDATE
+                    default["action"] = "UPDATE"
+                    try:
+                        default["NewSearchPatternID"] = ZIP_PATTERN[getNewLabel(anno)]
+                    except:
+                        a = getNewLabel(anno)
+                        print()
+                    x, y, w, h = getNewRect(anno)
+                    default["BorderLeft"] = x
+                    default["BorderTop"] = y
+                    default["BorderWidth"] = w
+                    default["BorderHeight"] = h
+    return default
 
 if __name__ == '__main__':
+    events = sorted(getAllEvents(INPUT), key=lambda x: str(x[1]))
+    with pathlib.Path.open(INPUT / 'report.csv', 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_fieldnames)
 
-    try:
-        os.mkdir(os.path.join(TEMP, 'video'))
-    except:
-        pass
+        writer.writeheader()
 
-    url_list = []
-    queue = JoinableQueue(8000)
-    pool = ThreadPool(24)
+        for event in events:
+            result = process_event(event)
+            writer.writerow(result)
 
-    for idx, row in enumerate(tqdm.tqdm(read_csv_gen, position=0)):
 
-        # if idx < START_ROW:
-        #     continue
-
-        GUID, \
-        SearchPatternName, \
-        start, \
-        end, \
-        BorderLeft, \
-        BorderTop, \
-        BorderWidth, \
-        BorderHeight,\
-        url, \
-        SearchPatternID = row['ResultSearchPatternID'], \
-              row['SearchPatternName'], \
-              row['Start'], \
-              row['End'], int(row['BorderLeft']), int(row['BorderTop']), int(row['BorderWidth']), int(row['BorderHeight']), row['URL'], row['SearchPatternID']
-
-        name = row["NodeName"]
-        timezone = cities[name]
-        # parse time
-
-        try:
-            start = start[:-9]
-            end = end[:-9]
-            # starttime = datetime.datetime.strptime(start, '%m/%d/%y %H:%M %p')
-            # endtime = datetime.datetime.strptime(end, '%m/%d/%y %H:%M %p')
-            # starttime = datetime.datetime.strptime(start, '%Y-%m-%d %H:%M:%S.%f') - datetime.timedelta(hours=timezone)
-            # endtime = datetime.datetime.strptime(end, '%Y-%m-%d %H:%M:%S.%f') - datetime.timedelta(hours=timezone)
-
-            # local_starttime = starttime + datetime.timedelta(hours=timezone)
-            # local_endtime = endtime + datetime.timedelta(hours=timezone)
-            local_starttime = datetime.datetime.strptime(start, '%Y-%m-%d %H:%M:%S.%f')
-            local_endtime = datetime.datetime.strptime(end, '%Y-%m-%d %H:%M:%S.%f')
-        except Exception as err:
-            print(f'{row}')
-        else:
-            # duration = (endtime - starttime).total_seconds()
-            duration = (local_endtime - local_starttime).total_seconds()
-
-            match = re.findall(r'^(?P<zip>\+?\d{1,2}\+?)', SearchPatternName)
-            pattern = match[0].replace('+', '') + '+' if match else None
-
-            # if starttime < datetime.datetime.today().replace(hour=6, minute=0):
-            #     continue
-
-            video_file_name = f'{row["NodeName"].replace(" ", "+")}_{local_starttime.strftime("%d.%m.%Y_%H:%M:%S.%f")}_{local_endtime.strftime("%d.%m.%Y_%H:%M:%S.%f")}_{GUID}.ts'
-            video_file = TEMP / 'video' / video_file_name
-
-            anno_path = video_file.with_suffix('.log')
-            create_anno(anno_path, {"top": BorderTop,
-                         "left": BorderLeft,
-                         "width": BorderWidth,
-                         "height": BorderHeight,
-                         "obj_class": reverse_mapping[pattern],
-                         "duration": duration,
-                         "gap": GAP
-                         })
-
-            if video_file.exists():
-                print(f'{idx}: Video file exists. Skip!')
-                continue
-
-            url_list.append((url, video_file))
-
-    result = pool.map(download_file, url_list)
-    # close the pool and wait for the work to finish
-    pool.close()
-    pool.join()
-    url_list.clear()
-
-    print("############################################\n")
-    print("\n")
-    print("################# Г О Т О В О ###############\n")
-    print("\n")
-    print("######## ЗАПУСТИТЕ УТИЛИТУ РАЗМЕТКИ ########\n")

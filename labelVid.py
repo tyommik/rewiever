@@ -701,7 +701,7 @@ class MainWindow(QMainWindow, WindowMixin):
             self.fileListWidget.addItem(item)
 
     def scanAllVideos(self, folderPath):
-        extensions = ['.mp4']
+        extensions = ['.mkv']
         images = []
 
         for root, dirs, files in os.walk(folderPath):
@@ -979,6 +979,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def openNextfile(self, item=None):
         currIndex = self.mVideoList.index(self.filePath)
+        self.annoFilePath = ""
         fileWidgetItem = self.fileListWidget.item(currIndex)
         if currIndex + 1 < len(self.mVideoList):
             filename = self.mVideoList[currIndex + 1]
@@ -986,7 +987,7 @@ class MainWindow(QMainWindow, WindowMixin):
                 self.fileListWidget.scrollToItem(self.fileListWidget.item(currIndex + 1),
                                                   hint=QAbstractItemView.EnsureVisible)
                 self.filePath = filename
-                self.loadVideoCacheByFilename(filename.replace('mp4', 'log'))
+                self.loadVideoCacheByFilename(filename.replace('mkv', 'log'))
                 self.loadFile(filename)
                 self.filedock.setWindowTitle(f'File list {currIndex + 1}/{len(self.mVideoList)}')
 
@@ -999,7 +1000,7 @@ class MainWindow(QMainWindow, WindowMixin):
             filename = self.mVideoList[currIndex]
             if filename:
                 self.filePath = filename
-                self.loadVideoCacheByFilename(filename.replace('mp4', 'log'))
+                self.loadVideoCacheByFilename(filename.replace('mkv', 'log'))
                 self.loadFile(filename)
                 self.filedock.setWindowTitle(f'File list {currIndex + 1}/{len(self.mVideoList)}')
 
@@ -1682,7 +1683,7 @@ class MainWindow(QMainWindow, WindowMixin):
         if not self.mayContinue():
             return None
         path = os.path.dirname(str(self.filePath)) if self.filePath else '.'
-        formats = ['*.mp4', '*.avi', '*.mkv', '*.ts', '*.mpeg', '*.mov']
+        formats = ['*.mkv', '*.avi', '*.mkv', '*.ts', '*.mpeg', '*.mov']
         filters = "Video files (%s)" % ' '.join(formats + ['*%s' % CACHE_EXT])
         filename = QFileDialog.getOpenFileName(self, '%s - Choose Image or Label file' % __appname__, path, filters)
         if filename:
@@ -1710,6 +1711,10 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def saveAnnotation(self):
         self.saveFile()
+        if not self.annoFilePath:
+            head, ext = self.filePath.rsplit('.', maxsplit=1)
+            self.annoFilePath = head + f'.anno'
+            print()
         if self.annoFilePath and self.filePath:
             if self.shapes:
                 self.shapes.save(filepath=self.annoFilePath)

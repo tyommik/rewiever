@@ -32,3 +32,5 @@ if __name__ == '__main__':
             p = os.path.join(root, file)
             if p.endswith(".ts"):
                 convert_to_mkv_mkvtoolnix(p)
+
+                convert_to_mp4(file, new_path)

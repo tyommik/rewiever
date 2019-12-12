@@ -1,35 +1,31 @@
 import csv
+import tqdm
+import datetime
+import pathlib
+import requests
+import subprocess
+import os
+import csv
 import re
 import requests
 import datetime
 import os
-import cv2
-import json
 import tqdm
-from multiprocessing import Pool
 from multiprocessing.dummy import Pool as ThreadPool, JoinableQueue
-from itertools import product
 import pathlib
 import subprocess
 import csv
+import random
+
+DB = r'data/servers.csv'
+
+CSV_FILE = r'/home/ashibaev/Downloads/Telegram Desktop/элиста_домашний.csv'
+OUTPUT = r'/home/ashibaev/Documents/Доразметка'
+
+DATE = "03-12-2019"
 
 
-from PIL import Image, ImageFile
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-# SETTINGS
-CSV_FILE = r'/home/ashibaev/Documents/ЗИП_АХТУНГ/Казань/Эфир/source.csv'
-
-
-def read_csv(csvfile):
-    with open(csvfile, newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile, delimiter=';')
-        for row in reader:
-            yield row
-
-TEMP = pathlib.Path(CSV_FILE).parent
-FPS = 25
-read_csv_gen = read_csv(CSV_FILE)
+OUTPUT = pathlib.Path(OUTPUT)
 
 cities = {
     "Воронеж": 3,
@@ -251,6 +247,12 @@ cities = {
     "SL-EKB": 5,
 }
 
+def read_csv(csvfile):
+    with open(csvfile, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile, delimiter=';')
+        for row in reader:
+            yield row
+
 def create_anno(anno_path, params: dict):
     x1, y1, x2, y2 = params["left"], params["top"], params["left"] + params["width"], params["top"] + params["height"]
     obj_class = params["obj_class"]
@@ -289,6 +291,7 @@ def convert_to_mkv_mkvtoolnix(video_file):
 
 def download_file(args):
     url, file = args
+
     try:
         r = requests.get(url, allow_redirects=True, timeout=35)
         r.raise_for_status()
@@ -298,93 +301,122 @@ def download_file(args):
         with pathlib.Path.open(file, 'wb') as ouf:
             ouf.write(r.content)
             convert_to_mkv_mkvtoolnix(file)
+            file.unlink()
         return True
     return False
 
+def get_url(service_id, ip_address, ctime_start, label):
 
-mapping = {0: '0+', 1: '12+', 2: '16+', 3: '18+', 4: '6+', 5: 'none'}
-reverse_mapping = {'0+': 0, '6+': 1, '12+': 2, '16+': 3, '18+': 4 }
+    start = ctime_start
+    stop = ctime_start + datetime.timedelta(seconds=15)
 
-START_ROW = 0
-GAP = 5 * 25 # seconds * fps
+    start = start.strftime("%Y-%m-%dT%H_%M_%S") + '.000Z'
+    stop = stop.strftime("%Y-%m-%dT%H_%M_%S") + '.000Z'
+    if ip_address is not None and service_id is not None:
+        return f'http://{ip_address}/DownloadTS?StorageId={service_id}&start={start}&end={stop}&timeZone=0'
+    else:
+        return ""
+
+
+def getNewRect(anno):
+    labels = set()
+    start_time = 0
+    with pathlib.Path.open(anno, 'r') as anno_f:
+        for line in anno_f.readlines():
+            line = line.strip()
+            if line.startswith("#"):
+                continue
+            pos, x1, y1, x2, y2, obj_class, precision = map(int, line.split(' '))
+            labels.add((x1, y1, x2, y2))
+            if not start_time:
+                start_time=pos
+
+    if len(labels) > 1:
+        raise ValueError (anno)
+    if labels:
+        l = [label for label in labels][0]
+        x, y, w, h = l[0], l[1], l[2] - l[0], l[3] - l[1]
+        return x, y, w, h, start_time//25
+
+mapping = {0: '0+', 1: '6+', 2: '12+', 3: '16+', 4: '18+', 5: 'none'}
+def getNewLabel(anno):
+    labels = set()
+    with pathlib.Path.open(anno, 'r') as anno_f:
+        for line in anno_f.readlines():
+            line = line.strip()
+            if line.startswith("#"):
+                continue
+            pos, x1, y1, x2, y2, obj_class, precision = line.split(' ')
+            obj_class = int(obj_class)
+            labels.add(obj_class)
+
+    if len(labels) > 1:
+        raise ValueError (anno)
+    l = [label for label in labels][0]
+    t = mapping[l]
+    return t
+
+
+read_db_gen = read_csv(DB)
+read_update_gen = read_csv(CSV_FILE)
 
 if __name__ == '__main__':
-
-    try:
-        os.mkdir(os.path.join(TEMP, 'video'))
-    except:
-        pass
 
     url_list = []
     queue = JoinableQueue(8000)
     pool = ThreadPool(24)
 
-    for idx, row in enumerate(tqdm.tqdm(read_csv_gen, position=0)):
+    services = {}
+    report_rows = []
 
-        # if idx < START_ROW:
-        #     continue
+    csv_fieldnames = ['service_id',	'time_start', 'label', 'new_label', 'NewStartTime', 'NewEndTime', 'BorderLeft', 'BorderTop', 'BorderWidth', 'BorderHeight']
 
-        GUID, \
-        SearchPatternName, \
-        start, \
-        end, \
-        BorderLeft, \
-        BorderTop, \
-        BorderWidth, \
-        BorderHeight,\
-        url, \
-        SearchPatternID = row['ResultSearchPatternID'], \
-              row['SearchPatternName'], \
-              row['Start'], \
-              row['End'], int(row['BorderLeft']), int(row['BorderTop']), int(row['BorderWidth']), int(row['BorderHeight']), row['URL'], row['SearchPatternID']
+    print('Load service_db...')
+    for idx, row in enumerate(tqdm.tqdm(read_db_gen, position=0)):
+        service_id = row['ServiceID'].lower()
+        ip_address = row['IPAddress']
+        city = row['City']
+        service_name = row['Name']
 
-        name = row["NodeName"]
-        timezone = cities[name]
-        # parse time
+        services[service_id] = (ip_address, city, service_name)
 
+    print('Db is loaded!')
+
+    all_paths = []
+    path = None
+    print('Analyze update list...')
+    for idx, row in enumerate(tqdm.tqdm(read_update_gen, position=0)):
+        report_rows.append(row)
+        service_id = row['service_id'].lower()
+        ip_address, city, service_name = services[service_id]
+        city = city.replace(' ', '+')
+        service_name = service_name.replace(' ', '+')
+
+        time_start = row['time_start']
+        H, M, S = map(int, time_start.split(':'))
+        label = row['label']
+
+        timezone = cities[city]
+
+        local_time = datetime.datetime.strptime(DATE, '%d-%m-%Y') + datetime.timedelta(hours=H, minutes=M, seconds=S)
+        ctime_start = datetime.datetime.strptime(DATE, '%d-%m-%Y') + datetime.timedelta(hours=H, minutes=M, seconds=S) - datetime.timedelta(hours=timezone)
+        url = get_url(service_id, ip_address, ctime_start, label)
+
+        video_file_name = f'{city.replace(" ", "+")}_{service_name.replace(" ", "+")}_{service_id}_{local_time.strftime("%Y-%m-%d_%H:%M:%S")}.ts'
+        path = OUTPUT / city / service_name
         try:
-            start = start[:-9]
-            end = end[:-9]
-            # starttime = datetime.datetime.strptime(start, '%m/%d/%y %H:%M %p')
-            # endtime = datetime.datetime.strptime(end, '%m/%d/%y %H:%M %p')
-            # starttime = datetime.datetime.strptime(start, '%Y-%m-%d %H:%M:%S.%f') - datetime.timedelta(hours=timezone)
-            # endtime = datetime.datetime.strptime(end, '%Y-%m-%d %H:%M:%S.%f') - datetime.timedelta(hours=timezone)
+            os.makedirs(path)
+        except:
+            pass
 
-            # local_starttime = starttime + datetime.timedelta(hours=timezone)
-            # local_endtime = endtime + datetime.timedelta(hours=timezone)
-            local_starttime = datetime.datetime.strptime(start, '%Y-%m-%d %H:%M:%S.%f')
-            local_endtime = datetime.datetime.strptime(end, '%Y-%m-%d %H:%M:%S.%f')
-        except Exception as err:
-            print(f'{row}')
-        else:
-            # duration = (endtime - starttime).total_seconds()
-            duration = (local_endtime - local_starttime).total_seconds()
 
-            match = re.findall(r'^(?P<zip>\+?\d{1,2}\+?)', SearchPatternName)
-            pattern = match[0].replace('+', '') + '+' if match else None
+        video_file = path / video_file_name
+        all_paths.append((video_file, local_time))
+        if video_file.with_suffix('.mkv').exists():
+            continue
+        url_list.append((url, video_file))
 
-            # if starttime < datetime.datetime.today().replace(hour=6, minute=0):
-            #     continue
-
-            video_file_name = f'{row["NodeName"].replace(" ", "+")}_{local_starttime.strftime("%d.%m.%Y_%H:%M:%S.%f")}_{local_endtime.strftime("%d.%m.%Y_%H:%M:%S.%f")}_{GUID}.ts'
-            video_file = TEMP / 'video' / video_file_name
-
-            anno_path = video_file.with_suffix('.log')
-            create_anno(anno_path, {"top": BorderTop,
-                         "left": BorderLeft,
-                         "width": BorderWidth,
-                         "height": BorderHeight,
-                         "obj_class": reverse_mapping[pattern],
-                         "duration": duration,
-                         "gap": GAP
-                         })
-
-            if video_file.exists():
-                print(f'{idx}: Video file exists. Skip!')
-                continue
-
-            url_list.append((url, video_file))
-
+    print('All videos were added to queue!')
     result = pool.map(download_file, url_list)
     # close the pool and wait for the work to finish
     pool.close()
@@ -396,3 +428,48 @@ if __name__ == '__main__':
     print("################# Г О Т О В О ###############\n")
     print("\n")
     print("######## ЗАПУСТИТЕ УТИЛИТУ РАЗМЕТКИ ########\n")
+
+    print('Ожидание окончания работы с утилитой!')
+
+    while True:
+        one = input('Введите 1 для продолжения:')
+        if one == '1':
+            break
+
+    update_report_rows = []
+    for idx, row in enumerate(report_rows):
+        video, local_time = all_paths[idx]
+        anno = video.with_suffix('.anno')
+        try:
+            if anno.exists() and getNewRect(anno):
+                x, y, w, h, time_shift = getNewRect(anno)
+                new_label = getNewLabel(anno)
+                row["BorderLeft"] = x
+                row["BorderTop"] = y
+                row["BorderWidth"] = w
+                row["BorderHeight"] = h
+                row['new_label'] = new_label
+                # strftime("%d.%m.%Y %H:%M:%S")
+                row["NewStartTime"] = (local_time + datetime.timedelta(seconds=time_shift)).strftime("%d.%m.%Y %H:%M:%S")
+                row["NewEndTime"] = (local_time + datetime.timedelta(seconds=time_shift + random.randint(9, 12))).strftime(
+                    "%d.%m.%Y %H:%M:%S")
+        except:
+            pass
+
+        update_report_rows.append(row)
+
+    with pathlib.Path.open(path / 'report.csv', 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_fieldnames)
+
+        writer.writeheader()
+
+        for event in update_report_rows:
+            writer.writerow(event)
+
+
+
+
+
+
+
+
